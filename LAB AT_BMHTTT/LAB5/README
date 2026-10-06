@@ -1,1 +1,98 @@
+# BÁO CÁO THỰC HÀNH LAB 5: XÂY DỰNG VÙNG MẠNG DMZ VÀ CẤU HÌNH DỊCH VỤ WEB (IIS) VỚI PFSENSE
 
+---
+
+## THÔNG TIN SINH VIÊN
+* **Họ và tên**: Nguyễn Tấn Hoàng
+* **Mã số sinh viên (MSSV)**: 1150080016
+* **Lớp**: 11_THMT
+* **Tên bài thực hành**: Lab 5 - THIẾT LẬP MÔ HÌNH TƯỜNG LỬA pfSense
+
+
+---
+
+## 1. MÔ TẢ MÔ HÌNH VÀ THÔNG SỐ HỆ THỐNG
+
+### Bảng phân hoạch mạng & địa chỉ IP
+
+| Thành phần / Máy ảo | Giao diện mạng (Interface) | Chế độ VirtualBox | Địa chỉ IP / Subnet | Vai trò / Dịch vụ |
+| :--- | :--- | :--- | :--- | :--- |
+| **pfSense Firewall** | WAN (`em0`)[cite: 17] | Bridged Adapter | `192.168.1.45/24` | Gateway ngoài, định tuyến, NAT Port Forward |
+| | LAN (`em1`) | Internal Network (`lan-net`) | `10.0.0.1/24` | Gateway quản trị pfSense |
+| | DMZ (`em2`) | Internal Network (`dmz-net`)[cite: 1, 10] | `172.16.0.1/16`[cite: 18] | Gateway quản lý vùng DMZ[cite: 18] |
+| **Domain-Controller** | Adapter 1 | Internal Network (`lan-net`) | `10.0.0.2/24` | Active Directory, DNS Server nội bộ |
+| **DMZ-Server (Web IIS)** | Adapter 1[cite: 10] | Internal Network (`dmz-net`)[cite: 10] | `172.16.0.2/16`[cite: 18] | Windows Server 2025, Web Server (IIS) |
+| **Máy thật (Host PC)** | Card mạng Wi-Fi/LAN | Mạng vật lý | `192.168.1.x/24` | Đóng vai trò máy khách từ Internet/WAN |
+
+---
+
+## 2. QUÁ TRÌNH TRIỂN KHAI VÀ XỬ LÝ SỰ CỐ KỸ THUẬT
+
+### 2.1. Khởi tạo máy ảo DMZ độc lập
+* **Lỗi phát sinh**:
+  * Khi gắn file đĩa `.vmdk` copy từ máy khác: Bị lỗi đường dẫn `VERR_FILE_NOT_FOUND (0x80bb0004)`[cite: 1].
+  * Khi clone bằng lệnh lúc máy gốc đang chạy: Bị lỗi khóa đĩa `VBOX_E_INVALID_OBJECT_STATE (0x80bb0007)`[cite: 3].
+  * Khi gắn đĩa trắng: Báo lỗi `No bootable medium found!` hoặc `failed to load Boot0001 "UEFI VBOX HARDDISK...": Not Found`[cite: 4, 9].
+* **Cách khắc phục**:
+  * Thực hiện **Full Clone** trực tiếp từ máy mẫu hoặc convert đĩa độc lập[cite: 1, 3].
+  * Bật tính năng **UEFI** và **TPM 2.0** trong thẻ `System -> Motherboard` trên VirtualBox để nạp hệ điều hành Windows Server 2025 theo chuẩn GPT[cite: 8].
+  * Thiết lập card mạng ở chế độ **Internal Network** với tên mạng là `dmz-net`, đồng thời kiểm tra đánh dấu tick tại mục `Virtual Cable Connected`[cite: 10].
+
+### 2.2. Gán IP tĩnh và cài đặt Web Server (IIS) trên máy DMZ
+* **Cấu hình IP máy DMZ**:
+  * IP Address: `172.16.0.2`[cite: 18]
+  * Subnet Mask: `255.255.0.0`
+  * Default Gateway: `172.16.0.1` (IP interface DMZ của pfSense)[cite: 18]
+* **Cài đặt Web Server (IIS)**:
+  * Mở Windows PowerShell (Run as Administrator) và chạy lệnh[cite: 11, 13]:
+    ```powershell
+    Install-WindowsFeature -Name Web-Server -IncludeManagementTools
+    ```
+  * Khởi động và kiểm tra dịch vụ IIS:
+    ```powershell
+    Start-Service W3SVC
+    Get-Service W3SVC
+    ```
+  * Dịch vụ đạt trạng thái `Running` và mở thành công trang kiểm tra nội bộ tại `http://localhost`[cite: 13].
+
+### 2.3. Cấu hình định tuyến và xử lý sự cố trên pfSense
+* **Kiểm tra thông tuyến pfSense <-> DMZ**:
+  * Sử dụng công cụ `Diagnostics -> Ping` trên WebGUI pfSense, ping từ interface `DMZ` đến IP `172.16.0.2`[cite: 18].
+  * Kết quả đạt **0.0% packet loss**[cite: 18].
+* **Bỏ chặn dải Private trên cổng WAN**:
+  * Vào `Interfaces -> WAN`, bỏ chọn 2 mục:
+    * `Block private networks and loopback addresses`[cite: 16]
+    * `Block bogon networks`[cite: 16]
+  * Bấm **Save** và **Apply Changes** để pfSense tiếp nhận gói tin từ dải mạng nội bộ ngoài đời `192.168.1.x`.
+* **Khôi phục WebGUI khi đổi nhầm cổng**:
+  * Khi đổi cổng WebGUI khiến trình duyệt bị mất kết nối (`ERR_CONNECTION_TIMED_OUT`)[cite: 20, 21], truy cập màn hình Shell console (mục 8) của pfSense và chạy[cite: 22, 23]:
+    ```sh
+    pfSsh.php playback resetwebgui
+    ```
+  * pfSense tự động khôi phục giao diện quản trị về cổng mặc định an toàn (`done`)[cite: 23].
+
+---
+
+## 3. TRIỂN KHAI TÌNH HUỐNG 4: NAT PORT FORWARDING CHO DỊCH VỤ WEB (IIS)
+
+### 3.1. Mục tiêu
+Cho phép máy người dùng ở môi trường mạng ngoài (WAN / Máy thật `192.168.1.x`) truy cập trực tiếp vào Web Server IIS (`172.16.0.2:80`) đặt trong vùng DMZ thông qua địa chỉ IP đại diện `192.168.1.45`[cite: 14, 18].
+
+### 3.2. Cấu hình chi tiết trên pfSense
+1. Truy cập `Firewall -> NAT -> Port Forward`, bấm nút **Add**[cite: 15, 16]:
+   * **Interface**: `WAN`
+   * **Address Family**: `IPv4`
+   * **Protocol**: `TCP`
+   * **Destination**: `WAN address` *(không chọn DMZ address để tránh việc Firewall drop kết nối)*[cite: 15, 16]
+   * **Destination port range**: `HTTP (80)`[cite: 16]
+   * **Redirect target IP**: `172.16.0.2`[cite: 18]
+   * **Redirect target port**: `HTTP (80)`
+   * **NAT Reflection**: `Enable (NAT + proxy)`
+   * **Filter rule association**: `Add associated filter rule`
+2. Bấm **Save** và nhấn **Apply Changes**.
+
+### 3.3. Kiểm tra kết quả
+1. Mở trình duyệt Web trên máy thật (Host PC)[cite: 14].
+2. Truy cập vào đường dẫn:
+   ```text
+   [http://192.168.1.45](http://192.168.1.45)
